@@ -2,6 +2,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Allocating = std.Io.Writer.Allocating;
 
+const Callback = fn (ip: IP, prefix: u8) void;
+
 pub const IP = union(enum) {
     v4: u32,
     v6: u128,
@@ -176,12 +178,12 @@ pub const Trie = struct {
         return node.terminal;
     }
 
-    pub fn iterate(self: *const Trie, comptime callback: fn (ip: IP, prefix: u8) void) void {
+    pub fn iterate(self: *const Trie, comptime callback: Callback) void {
         if (self.v4) |r| walkNode(r, IP{ .v4 = 0 }, 0, callback);
         if (self.v6) |r| walkNode(r, IP{ .v6 = 0 }, 0, callback);
     }
 
-    pub fn walkNode(node: *Node, current: IP, depth: u8, callback: fn (ip: IP, prefix: u8) void) void {
+    pub fn walkNode(node: *Node, current: IP, depth: u8, comptime callback: Callback) void {
         if (node.terminal) {
             callback(current, depth);
             return;
