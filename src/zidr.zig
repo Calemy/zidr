@@ -173,19 +173,18 @@ pub const IP = union(enum) {
                 v & 0xff,
             }),
             .v6 => |v| {
-                var list = try Allocating.initCapacity(alloc, 39);
-                errdefer list.deinit();
+                var list = try std.ArrayList(u8).initCapacity(alloc, 39);
+                errdefer list.deinit(alloc);
 
                 var i: u8 = 0;
                 while (i < 8) : (i += 1) {
-                    if (i != 0)
-                        try list.append(':');
+                    if (i != 0) try list.append(alloc, ':');
 
                     const shift: u7 = @intCast((7 - i) * 16);
-                    try list.writer.print("{x:0>4}", .{(v >> shift) & 0xffff});
+                    try list.print(alloc, "{x:0>4}", .{(v >> shift) & 0xffff});
                 }
 
-                return list.toOwnedSlice();
+                return list.toOwnedSlice(alloc);
             },
         };
     }
