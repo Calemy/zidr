@@ -5,12 +5,18 @@ const Allocating = std.Io.Writer.Allocating;
 const Callback = fn (ip: IP, subnet: u8) void;
 
 pub const IPv4 = struct {
-    ip: IP,
-    subnet: u8 = 32,
+    pub fn new(str: []const u8) !IP {
+        var s = str;
+        var subnet: u8 = 32;
 
-    pub fn new(str: []const u8) !IPv4 {
+        if (std.mem.indexOfScalar(u8, s, '/')) |slash| {
+            subnet = try std.fmt.parseInt(u8, s[slash + 1 ..], 10);
+            if (subnet > 32) return error.InvalidSubnet;
+            s = s[0..slash];
+        }
+
         var result: u32 = 0;
-        var iterator = std.mem.splitScalar(u8, str, '.');
+        var iterator = std.mem.splitScalar(u8, s, '.');
         var i: u8 = 0;
 
         while (iterator.next()) |part| : (i += 1) {
@@ -20,32 +26,22 @@ pub const IPv4 = struct {
         }
 
         if (i != 4) return error.TooFewOctets;
-        return IPv4{ .ip = IP{ .v4 = result } };
-    }
-
-    pub fn withSubnet(str: []const u8) !IPv4 {
-        const slash = std.mem.indexOfScalar(u8, str, '/') orelse return error.MissingSubnet;
-        var result = try new(str[0..slash]);
-        result.subnet = try std.fmt.parseInt(u8, str[slash + 1 ..], 10);
-        if (result.subnet > 32) return error.InvalidSubnet;
-        return result;
+        return IP{ .addr = .{ .v4 = result }, .subnet = subnet };
     }
 };
 
 pub const IPv6 = struct {
-    ip: IP,
-    subnet: u8 = 128,
+    pub fn new(str: []const u8) !IP {
+        var s = str;
+        var subnet: u8 = 128;
 
-    pub fn new(str: []const u8) !IPv6 {
-        return .{ .ip = .{ .v6 = try parseAddr(str) } };
-    }
+        if (std.mem.indexOfScalar(u8, str, '/')) |slash| {
+            subnet = try std.fmt.parseInt(u8, s[slash + 1 ..], 10);
+            if (subnet > 128) return error.InvalidSubnet;
+            s = s[0..slash];
+        }
 
-    pub fn withSubnet(str: []const u8) !IPv6 {
-        const slash = std.mem.indexOfScalar(u8, str, '/') orelse return error.MissingSubnet;
-        var result = try new(str[0..slash]);
-        result.subnet = try std.fmt.parseInt(u8, str[slash + 1 ..], 10);
-        if (result.subnet > 128) return error.InvalidSubnet;
-        return result;
+        return IP{ .addr = .{ .v6 = try parseAddr(s) }, .subnet = subnet };
     }
 
     fn parseAddr(str: []const u8) !u128 {
@@ -112,41 +108,53 @@ pub const IPv6 = struct {
     }
 };
 
-pub const IP = union(enum) {
-    v4: u32,
-    v6: u128,
+pub const IP = struct {
+    addr: union(enum) {
+        v4: u32,
+        v6: u128,
+    },
+    subnet: u8,
+
+    pub fn v4(str: []const u8) !IP {
+        return IPv4.new(str);
+    }
+
+    pub fn v6(str: []const u8) !IP {
+        return IPv6.new(str);
+    }
 
     pub fn bits(self: IP) u8 {
-        return switch (self) {
+        return switch (self.addr) {
             .v4 => 32,
             .v6 => 128,
         };
     }
 
     pub fn bit(self: IP, n: u8) u1 {
-        return switch (self) {
+        return switch (self.addr) {
             .v4 => |v| @truncate((v >> @intCast(31 - n)) & 1),
             .v6 => |v| @truncate((v >> @intCast(127 - n)) & 1),
         };
     }
 
-    pub fn mask(self: IP, subnet: u8) IP {
-        return switch (self) {
+    pub fn mask(self: IP, subnet: ?u8) IP {
+        const net = subnet orelse self.subnet;
+        return switch (self.addr) {
             .v4 => |v| blk: {
-                if (subnet == 0) break :blk .{ .v4 = 0 };
-                const shift: u5 = @intCast(32 - subnet);
-                break :blk .{ .v4 = (v >> shift) << shift };
+                if (net == 0) break :blk .{ .addr = .{ .v4 = 0 }, .subnet = net };
+                const shift: u5 = @intCast(32 - net);
+                break :blk .{ .addr = .{ .v4 = (v >> shift) << shift }, .subnet = net };
             },
             .v6 => |v| blk: {
-                if (subnet == 0) break :blk .{ .v6 = 0 };
-                const shift: u7 = @intCast(128 - subnet);
-                break :blk .{ .v6 = (v >> shift) << shift };
+                if (net == 0) break :blk .{ .addr = .{ .v6 = 0 }, .subnet = net };
+                const shift: u7 = @intCast(128 - net);
+                break :blk .{ .addr = .{ .v6 = (v >> shift) << shift }, .subnet = net };
             },
         };
     }
 
     pub fn format(self: IP, writer: anytype) !void {
-        return switch (self) {
+        return switch (self.addr) {
             .v4 => |v| try writer.print("{}.{}.{}.{}", .{
                 (v >> 24) & 0xff,
                 (v >> 16) & 0xff,
@@ -165,7 +173,7 @@ pub const IP = union(enum) {
     }
 
     pub fn formatAlloc(self: IP, alloc: Allocator) ![]u8 {
-        return switch (self) {
+        return switch (self.addr) {
             .v4 => |v| try std.fmt.allocPrint(alloc, "{}.{}.{}.{}", .{
                 (v >> 24) & 0xff,
                 (v >> 16) & 0xff,
@@ -224,14 +232,15 @@ pub const Trie = struct {
     }
 
     fn rootPtr(self: *Trie, ip: IP) *?*Node {
-        return switch (ip) {
+        return switch (ip.addr) {
             .v4 => &self.v4,
             .v6 => &self.v6,
         };
     }
 
-    pub fn insert(self: *Trie, ip: IP, subnet: u8) !bool {
-        const addr = ip.mask(subnet);
+    pub fn insert(self: *Trie, ip: IP, subnet: ?u8) !bool {
+        const net = subnet orelse ip.subnet;
+        const addr = ip.mask(net);
         const ptr = self.rootPtr(ip);
 
         if (ptr.* == null) {
@@ -242,7 +251,7 @@ pub const Trie = struct {
         var node = ptr.*.?;
 
         var i: u8 = 0;
-        while (i < subnet) : (i += 1) {
+        while (i < net) : (i += 1) {
             if (node.terminal) return false;
 
             const b = addr.bit(i);
@@ -267,7 +276,7 @@ pub const Trie = struct {
     }
 
     pub fn contains(self: *const Trie, ip: IP) bool {
-        const root = switch (ip) {
+        const root = switch (ip.addr) {
             .v4 => self.v4,
             .v6 => self.v6,
         } orelse return false;
@@ -285,8 +294,8 @@ pub const Trie = struct {
         return node.terminal;
     }
 
-    pub fn scan(self: *const Trie, ip: IP) ?struct { ip: IP, subnet: u8 } {
-        const root = switch (ip) {
+    pub fn scan(self: *const Trie, ip: IP) ?IP {
+        const root = switch (ip.addr) {
             .v4 => self.v4,
             .v6 => self.v6,
         } orelse return null;
@@ -295,17 +304,17 @@ pub const Trie = struct {
 
         var i: u8 = 0;
         while (i < ip.bits()) : (i += 1) {
-            if (node.terminal) return .{ .ip = ip.mask(i), .subnet = i };
+            if (node.terminal) return ip.mask(i);
             node = node.children[ip.bit(i)] orelse return null;
         }
 
-        if (node.terminal) return .{ .ip = ip.mask(ip.bits()), .subnet = ip.bits() };
+        if (node.terminal) return ip.mask(ip.bits());
         return null;
     }
 
     pub fn iterate(self: *const Trie, comptime callback: Callback) void {
-        if (self.v4) |r| walkNode(r, IP{ .v4 = 0 }, 0, callback);
-        if (self.v6) |r| walkNode(r, IP{ .v6 = 0 }, 0, callback);
+        if (self.v4) |r| walkNode(r, IP{ .addr = .{ .v4 = 0 }, .subnet = 32 }, 0, callback);
+        if (self.v6) |r| walkNode(r, IP{ .addr = .{ .v6 = 0 }, .subnet = 128 }, 0, callback);
     }
 
     pub fn walkNode(node: *Node, current: IP, depth: u8, comptime callback: Callback) void {
@@ -323,16 +332,16 @@ pub const Trie = struct {
     }
 
     fn setBit(ip: IP, pos: u8, bit: u1) IP {
-        return switch (ip) {
+        return switch (ip.addr) {
             .v4 => |v| blk: {
                 const shift: u5 = @intCast(31 - pos);
                 const cleared = v & ~(@as(u32, 1) << shift);
-                break :blk .{ .v4 = cleared | (@as(u32, bit) << shift) };
+                break :blk .{ .addr = .{ .v4 = cleared | (@as(u32, bit) << shift) }, .subnet = @as(u8, shift) + 1 };
             },
             .v6 => |v| blk: {
                 const shift: u7 = @intCast(127 - pos);
                 const cleared = v & ~(@as(u128, 1) << shift);
-                break :blk .{ .v6 = cleared | (@as(u128, bit) << shift) };
+                break :blk .{ .addr = .{ .v6 = cleared | (@as(u128, bit) << shift) }, .subnet = @as(u8, shift) + 1 };
             },
         };
     }
@@ -340,7 +349,7 @@ pub const Trie = struct {
 
 test "IPv4: parse string" {
     const t = try IPv4.new("192.168.0.0");
-    try std.testing.expectEqual(0xC0A80000, t.ip.v4);
+    try std.testing.expectEqual(0xC0A80000, t.addr.v4);
 }
 
 test "IPv4: broader subnet subsumes more-specific" {
@@ -351,8 +360,8 @@ test "IPv4: broader subnet subsumes more-specific" {
     const broad = try IPv4.new("192.168.0.0");
     const narrow = try IPv4.new("192.168.1.0");
 
-    try std.testing.expect(try trie.insert(broad.ip, 16));
-    try std.testing.expect(!try trie.insert(narrow.ip, 24)); // already covered
+    try std.testing.expect(try trie.insert(broad, 16));
+    try std.testing.expect(!try trie.insert(narrow, 24)); // already covered
 }
 
 test "IPv4: insert narrow first, then broad prunes it" {
@@ -362,50 +371,50 @@ test "IPv4: insert narrow first, then broad prunes it" {
     const broad = try IPv4.new("192.168.0.0");
     const narrow = try IPv4.new("192.168.1.0");
 
-    try std.testing.expect(try trie.insert(narrow.ip, 24));
-    try std.testing.expect(try trie.insert(broad.ip, 16)); // inserts and prunes /24
+    try std.testing.expect(try trie.insert(narrow, 24));
+    try std.testing.expect(try trie.insert(broad, 16)); // inserts and prunes /24
 
     // /24 is gone; /16 covers it
-    try std.testing.expect(trie.contains(IP{ .v4 = 0xC0A80105 }));
+    try std.testing.expect(trie.contains(IP{ .addr = .{ .v4 = 0xC0A80105 }, .subnet = 32 }));
 }
 
 test "IPv4: contains" {
     var trie = Trie.init(std.testing.allocator);
     defer trie.deinit();
 
-    const t = try IPv4.withSubnet("10.0.0.0/8");
+    const t = try IPv4.new("10.0.0.0/8");
 
-    _ = try trie.insert(t.ip, t.subnet); // 10.0.0.0/8
+    _ = try trie.insert(t, t.subnet); // 10.0.0.0/8
 
-    try std.testing.expect(trie.contains((try IPv4.new("10.1.2.3")).ip)); // should work
-    try std.testing.expect(!trie.contains((try IPv4.new("11.0.0.1")).ip)); // should't work
+    try std.testing.expect(trie.contains((try IPv4.new("10.1.2.3")))); // should work
+    try std.testing.expect(!trie.contains((try IPv4.new("11.0.0.1")))); // should't work
 }
 
 test "IPv4: scan" {
     var trie = Trie.init(std.testing.allocator);
     defer trie.deinit();
 
-    const t = try IPv4.withSubnet("10.0.0.0/8");
+    const t = try IPv4.new("10.0.0.0/8");
 
-    _ = try trie.insert(t.ip, t.subnet); // 10.0.0.0/8
+    _ = try trie.insert(t, t.subnet); // 10.0.0.0/8
 
-    const scan = trie.scan((try IPv4.new("10.1.2.3")).ip);
+    const scan = trie.scan((try IPv4.new("10.1.2.3")));
     if (scan) |match| {
-        try std.testing.expectEqual(t.ip, match.ip);
+        try std.testing.expectEqual(t, match);
     }
 
-    try std.testing.expect(trie.scan((try IPv4.new("1.0.0.0")).ip) == null);
+    try std.testing.expect(trie.scan((try IPv4.new("1.0.0.0"))) == null);
 }
 
 test "iterate prints all stored CIDRs" {
     var trie = Trie.init(std.testing.allocator);
     defer trie.deinit();
 
-    const t1 = try IPv4.withSubnet("10.0.0.0/8");
-    const t2 = try IPv4.withSubnet("192.168.0.0/16");
+    const t1 = try IPv4.new("10.0.0.0/8");
+    const t2 = try IPv4.new("192.168.0.0/16");
 
-    _ = try trie.insert(t1.ip, t1.subnet); // 10.0.0.0/8
-    _ = try trie.insert(t2.ip, t2.subnet); // 192.168.0.0/16
+    _ = try trie.insert(t1, t1.subnet); // 10.0.0.0/8
+    _ = try trie.insert(t2, t2.subnet); // 192.168.0.0/16
 
     const S = struct {
         fn cb(ip: IP, subnet: u8) void {
@@ -421,7 +430,7 @@ test "iterate prints all stored CIDRs" {
 
 test "IPv6: parse string" {
     const t = try IPv6.new("2001:db8::");
-    try std.testing.expectEqual(t.ip.v6, 0x20010db8_00000000_00000000_00000000);
+    try std.testing.expectEqual(t.addr.v6, 0x20010db8_00000000_00000000_00000000);
 }
 
 test "IPv6: basic insert and contains" {
@@ -429,14 +438,14 @@ test "IPv6: basic insert and contains" {
     defer trie.deinit();
 
     // 2001:db8::/32
-    const t = try IPv6.withSubnet("2001:db8::/32");
-    _ = try trie.insert(t.ip, t.subnet);
+    const t = try IPv6.new("2001:db8::/32");
+    _ = try trie.insert(t, t.subnet);
 
     const inside = try IPv6.new("2001:db8:1::1");
     const outside = try IPv6.new("2001:db9::1");
 
-    try std.testing.expect(trie.contains(inside.ip));
-    try std.testing.expect(!trie.contains(outside.ip));
+    try std.testing.expect(trie.contains(inside));
+    try std.testing.expect(!trie.contains(outside));
 }
 
 test "IPv6: broader subsumes narrower" {
@@ -444,6 +453,6 @@ test "IPv6: broader subsumes narrower" {
     defer trie.deinit();
 
     const base = try IPv6.new("2001:db8::");
-    try std.testing.expect(try trie.insert(base.ip, 32));
-    try std.testing.expect(!try trie.insert(base.ip, 48)); // covered
+    try std.testing.expect(try trie.insert(base, 32));
+    try std.testing.expect(!try trie.insert(base, 48)); // covered
 }
