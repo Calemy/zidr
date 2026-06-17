@@ -166,11 +166,12 @@ pub const IP = struct {
 
     pub fn format(self: IP, writer: anytype) !void {
         return switch (self.addr) {
-            .v4 => |v| try writer.print("{}.{}.{}.{}", .{
+            .v4 => |v| try writer.print("{}.{}.{}.{}/{d}", .{
                 (v >> 24) & 0xff,
                 (v >> 16) & 0xff,
                 (v >> 8) & 0xff,
                 v & 0xff,
+                self.subnet,
             }),
             .v6 => |v| {
                 var i: u8 = 0;
@@ -179,17 +180,19 @@ pub const IP = struct {
                     const shift: u7 = @intCast((7 - i) * 16);
                     try writer.print("{x:0>4}", .{(v >> shift) & 0xffff});
                 }
+                try writer.print("/{d}", .{self.subnet});
             },
         };
     }
 
     pub fn formatAlloc(self: IP, alloc: Allocator) ![]u8 {
         return switch (self.addr) {
-            .v4 => |v| try std.fmt.allocPrint(alloc, "{}.{}.{}.{}", .{
+            .v4 => |v| try std.fmt.allocPrint(alloc, "{}.{}.{}.{}/{d}", .{
                 (v >> 24) & 0xff,
                 (v >> 16) & 0xff,
                 (v >> 8) & 0xff,
                 v & 0xff,
+                self.subnet,
             }),
             .v6 => |v| {
                 var list = try std.ArrayList(u8).initCapacity(alloc, 39);
@@ -202,6 +205,8 @@ pub const IP = struct {
                     const shift: u7 = @intCast((7 - i) * 16);
                     try list.print(alloc, "{x:0>4}", .{(v >> shift) & 0xffff});
                 }
+
+                try list.print(alloc, "/{d}", .{self.subnet});
 
                 return list.toOwnedSlice(alloc);
             },
