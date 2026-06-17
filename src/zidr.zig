@@ -364,8 +364,45 @@ pub const Trie = struct {
 };
 
 test "IPv4: parse string" {
-    const t = try IPv4.new("192.168.0.0");
-    try std.testing.expectEqual(0xC0A80000, t.addr.v4);
+    const ip = try IP.v4("192.168.0.0");
+    try std.testing.expectEqual(0xC0A80000, ip.addr.v4);
+}
+
+test "IPv6: parse string" {
+    const ip = try IP.v6("2001:db8::");
+    try std.testing.expectEqual(0x20010db8_00000000_00000000_00000000, ip.addr.v6);
+}
+
+test "IPv4/6: parse string automatic" {
+    const v4 = try IP.new("192.168.0.0");
+    const v6 = try IP.new("2001:db8::");
+    try std.testing.expectEqual(0xC0A80000, v4.addr.v4);
+    try std.testing.expectEqual(0x20010db8_00000000_00000000_00000000, v6.addr.v6);
+}
+
+test "IPv4: parse to string" {
+    const t = try IP.v4("192.168.0.0/24");
+    const t2 = try IP.v4("192.168.0.0");
+    const ip = try t.formatAlloc(std.testing.allocator);
+    const ip2 = try t2.formatAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(ip);
+    defer std.testing.allocator.free(ip2);
+
+    try std.testing.expectEqualStrings("192.168.0.0/24", ip);
+    try std.testing.expectEqualStrings("192.168.0.0/32", ip2);
+}
+
+test "IPv6: parse to string" {
+    const t = try IP.new("2001:db8::/69");
+    const t2 = try IP.new("2001:db8::");
+    const ip = try t.formatAlloc(std.testing.allocator);
+    const ip2 = try t2.formatAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(ip);
+    defer std.testing.allocator.free(ip2);
+
+    // TODO: make it able to shorten to save bytes?
+    try std.testing.expectEqualStrings("2001:0db8:0000:0000:0000:0000:0000:0000/69", ip);
+    try std.testing.expectEqualStrings("2001:0db8:0000:0000:0000:0000:0000:0000/128", ip2);
 }
 
 test "IPv4: broader subnet subsumes more-specific" {
@@ -373,8 +410,8 @@ test "IPv4: broader subnet subsumes more-specific" {
     defer trie.deinit();
 
     // Insert 192.168.0.0/16 first, then /24 should be rejected.
-    const broad = try IPv4.new("192.168.0.0");
-    const narrow = try IPv4.new("192.168.1.0");
+    const broad = try IP.new("192.168.0.0");
+    const narrow = try IP.new("192.168.1.0");
 
     try std.testing.expect(try trie.insert(broad, 16));
     try std.testing.expect(!try trie.insert(narrow, 24)); // already covered
@@ -384,50 +421,50 @@ test "IPv4: insert narrow first, then broad prunes it" {
     var trie = Trie.init(std.testing.allocator);
     defer trie.deinit();
 
-    const broad = try IPv4.new("192.168.0.0");
-    const narrow = try IPv4.new("192.168.1.0");
+    const broad = try IP.new("192.168.0.0");
+    const narrow = try IP.new("192.168.1.0");
 
     try std.testing.expect(try trie.insert(narrow, 24));
     try std.testing.expect(try trie.insert(broad, 16)); // inserts and prunes /24
 
     // /24 is gone; /16 covers it
-    try std.testing.expect(trie.contains(IP{ .addr = .{ .v4 = 0xC0A80105 }, .subnet = 32 }));
+    try std.testing.expect(trie.contains(try IP.new("192.168.1.5")));
 }
 
 test "IPv4: contains" {
     var trie = Trie.init(std.testing.allocator);
     defer trie.deinit();
 
-    const t = try IPv4.new("10.0.0.0/8");
+    const t = try IP.new("10.0.0.0/8");
 
     _ = try trie.insert(t, t.subnet); // 10.0.0.0/8
 
-    try std.testing.expect(trie.contains((try IPv4.new("10.1.2.3")))); // should work
-    try std.testing.expect(!trie.contains((try IPv4.new("11.0.0.1")))); // should't work
+    try std.testing.expect(trie.contains((try IP.new("10.1.2.3")))); // should work
+    try std.testing.expect(!trie.contains((try IP.new("11.0.0.1")))); // should't work
 }
 
 test "IPv4: scan" {
     var trie = Trie.init(std.testing.allocator);
     defer trie.deinit();
 
-    const t = try IPv4.new("10.0.0.0/8");
+    const t = try IP.new("10.0.0.0/8");
 
     _ = try trie.insert(t, t.subnet); // 10.0.0.0/8
 
-    const scan = trie.scan((try IPv4.new("10.1.2.3")));
+    const scan = trie.scan((try IP.new("10.1.2.3")));
     if (scan) |match| {
         try std.testing.expectEqual(t, match);
     }
 
-    try std.testing.expect(trie.scan((try IPv4.new("1.0.0.0"))) == null);
+    try std.testing.expect(trie.scan((try IP.new("1.0.0.0"))) == null);
 }
 
 test "iterate prints all stored CIDRs" {
     var trie = Trie.init(std.testing.allocator);
     defer trie.deinit();
 
-    const t1 = try IPv4.new("10.0.0.0/8");
-    const t2 = try IPv4.new("192.168.0.0/16");
+    const t1 = try IP.new("10.0.0.0/8");
+    const t2 = try IP.new("192.168.0.0/16");
 
     _ = try trie.insert(t1, t1.subnet); // 10.0.0.0/8
     _ = try trie.insert(t2, t2.subnet); // 192.168.0.0/16
@@ -444,21 +481,16 @@ test "iterate prints all stored CIDRs" {
     trie.iterate(S.cb);
 }
 
-test "IPv6: parse string" {
-    const t = try IPv6.new("2001:db8::");
-    try std.testing.expectEqual(t.addr.v6, 0x20010db8_00000000_00000000_00000000);
-}
-
 test "IPv6: basic insert and contains" {
     var trie = Trie.init(std.testing.allocator);
     defer trie.deinit();
 
     // 2001:db8::/32
-    const t = try IPv6.new("2001:db8::/32");
+    const t = try IP.new("2001:db8::/32");
     _ = try trie.insert(t, t.subnet);
 
-    const inside = try IPv6.new("2001:db8:1::1");
-    const outside = try IPv6.new("2001:db9::1");
+    const inside = try IP.new("2001:db8:1::1");
+    const outside = try IP.new("2001:db9::1");
 
     try std.testing.expect(trie.contains(inside));
     try std.testing.expect(!trie.contains(outside));
@@ -468,7 +500,7 @@ test "IPv6: broader subsumes narrower" {
     var trie = Trie.init(std.testing.allocator);
     defer trie.deinit();
 
-    const base = try IPv6.new("2001:db8::");
+    const base = try IP.new("2001:db8::");
     try std.testing.expect(try trie.insert(base, 32));
     try std.testing.expect(!try trie.insert(base, 48)); // covered
 }
