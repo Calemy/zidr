@@ -115,6 +115,17 @@ pub const IP = struct {
     },
     subnet: u8,
 
+    pub fn new(str: []const u8) !IP {
+        const probe = str[0..5];
+        if (std.mem.indexOfScalar(u8, probe, '.')) |_| {
+            return IP.v4(str);
+        } else if (std.mem.indexOfScalar(u8, probe, ':')) |_| {
+            return IP.v6(str);
+        } else {
+            return error.InvalidIP;
+        }
+    }
+
     pub fn v4(str: []const u8) !IP {
         return IPv4.new(str);
     }
